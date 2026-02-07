@@ -11,7 +11,6 @@ import json
 import uuid
 from datetime import datetime
 from pathlib import Path
-
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
@@ -79,90 +78,74 @@ def list_chats():
     for file in CHAT_DIR.glob("*.json"):
         with open(file, "r", encoding="utf-8") as f:
             chat = json.load(f)
-            title = chat.get("title", "New Chat")
-            chat_id = chat.get("chat_id")
-            if chat_id:
-                chats.append((title, chat_id))
+            chats.append((chat.get("title", "New Chat"), chat["chat_id"]))
     return chats
-
-
-
-# ===============================
-# CHATBOT FORMAT FIX
-# ===============================
-def messages_to_chatbot(messages):
-    pairs = []
-    user_msg = None
-
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-
-        if msg.get("role") == "user":
-            user_msg = msg.get("content", "")
-        elif msg.get("role") == "assistant":
-            if user_msg is None:
-                # orphan assistant → ignore
-                continue
-            pairs.append((user_msg, msg.get("content", "")))
-            user_msg = None
-
-    return pairs
 
 
 
 # ===============================
 # CORE CHAT HANDLER
 # ===============================
-def chat_handler(message, chat, file):
+def chat_handler(message, state, file):
     if not message:
-        return messages_to_chatbot(chat["messages"]), chat
+        return state, state
 
     document_text = read_file(file)
 
-    result = agent_graph.invoke({
-        "task": message,
-        "messages": chat["messages"],
-        "file_content": document_text[:12000]
-    })
-
-    answer = result["messages"][-1].content
-
-    chat["messages"].append({"role": "user", "content": message})
-    chat["messages"].append({"role": "assistant", "content": answer})
-
-    if chat["title"] == "New Chat":
-        chat["title"] = message[:40]
-
-    save_chat(chat)
-
-    return messages_to_chatbot(chat["messages"]), chat
+    try:
+        result = agent_graph.invoke({
+            "task": message,
+            "file_name": file.name if file else "",
+            "file_path": file.name if file else "",
+            "file_content": document_text[:12000],
+        })
 
 
+        last = result["messages"][-1]
+        answer = last.content if hasattr(last, "content") else last["content"]
+
+    except Exception as e:
+        answer = f"❌ Agent error: {e}"
+
+    state.append({"role": "user", "content": message})
+    state.append({"role": "assistant", "content": answer})
+
+    return state, state
+
+
+
+# ===============================
+# LOAD CHAT
+# ===============================
 def load_selected_chat(chat_id):
+    if not chat_id:
+        chat = new_chat()
+        return [], chat
+
     chat = load_chat(chat_id)
     if not chat:
         chat = new_chat()
 
-    return messages_to_chatbot(chat["messages"]), chat
+    clean = []
+    for m in chat["messages"]:
+        if isinstance(m, dict) and "role" in m and "content" in m:
+            clean.append({"role": m["role"], "content": str(m["content"])})
 
-
-
+    chat["messages"] = clean
+    return messages_to_chatbot(clean), chat
 
 def start_new_chat():
     chat = new_chat()
     save_chat(chat)
     return [], chat, list_chats()
 
-
-
 # ===============================
 # EXPORT
 # ===============================
 def get_last_answer(chat):
-    for msg in reversed(chat["messages"]):
-        if msg["role"] == "assistant":
-            return msg["content"]
+    for m in reversed(chat["messages"]):
+        if m["role"] == "assistant":
+            return m["content"]
     return ""
 
 def export_pdf(text):
@@ -179,120 +162,77 @@ def export_pdf(text):
     return file.name
 
 def export_txt(text):
-    file = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8")
-    file.write(text)
-    file.close()
-    return file.name
+    f = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8")
+    f.write(text)
+    f.close()
+    return f.name
 
 def export_csv(text):
-    file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w", newline="", encoding="utf-8")
-    writer = csv.writer(file)
+    f = tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w", newline="", encoding="utf-8")
+    writer = csv.writer(f)
     writer.writerow(["Answer"])
     for line in text.split("\n"):
         writer.writerow([line])
-    file.close()
-    return file.name
+    f.close()
+    return f.name
 
 def export_answer(chat, fmt):
-    answer = get_last_answer(chat)
-    if not answer:
+    ans = get_last_answer(chat)
+    if not ans:
         return None
     if fmt == "PDF":
-        return export_pdf(answer)
+        return export_pdf(ans)
     if fmt == "TXT":
-        return export_txt(answer)
+        return export_txt(ans)
     if fmt == "CSV":
-        return export_csv(answer)
+        return export_csv(ans)
 
 # ===============================
 # UI
 # ===============================
 with gr.Blocks(theme=gr.themes.Soft()) as demo:
-
     gr.Markdown("## 🧠 PersonaPlex — Document Chatbot")
 
-    current_chat = gr.State(new_chat())
+    current_chat = gr.State([])
 
     with gr.Row():
-        export_type = gr.Dropdown(["PDF", "TXT", "CSV"], value="PDF", label="Export as")
+        export_type = gr.Dropdown(["PDF", "TXT", "CSV"], value="PDF")
         export_btn = gr.Button("⬇️ Download")
     file_output = gr.File()
 
     with gr.Row():
         with gr.Column(scale=1):
             file_input = gr.File(label="📂 Upload PDF / TXT / CSV")
-            audio_input = gr.Audio(sources=["microphone"], type="numpy", label="🎤 Speak")
+            audio_input = gr.Audio(sources=["microphone"], type="numpy")
 
         with gr.Column(scale=3):
             chatbot = gr.Chatbot(height=450)
             with gr.Row():
-                text_input = gr.Textbox(
-                    placeholder="Ask something about your document…",
-                    show_label=False,
-                    scale=8
-                )
-                send_btn = gr.Button("➤", scale=1)
+                text_input = gr.Textbox(placeholder="Ask something…", scale=8)
+                send_btn = gr.Button("➤")
 
         with gr.Column(scale=1):
-            gr.Markdown("### 💬 Chats")
             chat_list = gr.Radio(choices=list_chats(), label="Previous chats")
             new_chat_btn = gr.Button("➕ New chat")
 
+    audio_input.change(audio_to_text, audio_input, text_input)
 
-
-
-    # -------------------------------
-    # EVENT WIRING (IMPORTANT)
-    # -------------------------------
-
-    # Voice → Text
-    audio_input.change(
-        fn=audio_to_text,
-        inputs=audio_input,
-        outputs=text_input
-    )
-
-    # Send button
     send_btn.click(
-        fn=chat_handler,
+        chat_handler,
         inputs=[text_input, current_chat, file_input],
         outputs=[chatbot, current_chat]
-    ).then(
-        fn=lambda: "",
-        outputs=text_input
     )
 
-
-
-    # Enter key
     text_input.submit(
-        fn=chat_handler,
-        inputs=[text_input, current_chat, file_input],
-        outputs=[chatbot, current_chat]
+        chat_handler,
+        [text_input, current_chat, file_input],
+        [chatbot, current_chat]
     )
 
-    export_btn.click(
-        fn=export_answer,
-        inputs=[current_chat, export_type],
-        outputs=file_output
-    )
+    export_btn.click(export_answer, [current_chat, export_type], file_output)
 
-    chat_list.change(
-        fn=load_selected_chat,
-        inputs=chat_list,
-        outputs=[chatbot, current_chat]
-    )
+    chat_list.change(load_selected_chat, chat_list, [chatbot, current_chat])
 
-
-
-    new_chat_btn.click(
-        fn=start_new_chat,
-        inputs=[],
-        outputs=[chatbot, current_chat, chat_list]
-    )
-
-
-
-
+    new_chat_btn.click(start_new_chat, None, [chatbot, current_chat, chat_list])
 
 demo.launch()
