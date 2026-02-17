@@ -1,21 +1,19 @@
 # PersonaPlex — Multi-Agent Document Chatbot
 
-PersonaPlex is an AI-powered **document chatbot** that lets users chat with PDFs, TXT, and CSV files using a **multi-agent architecture**.  
-It supports **chat history like ChatGPT**, **voice input**, and **exporting responses** to PDF, TXT, and CSV.
+Using a multi-agent architecture, PersonaPlex is an AI-powered document chatbot that enables users to communicate with PDF, TXT, and CSV files.
+Voice input, exporting responses to PDF, TXT, and CSV, and chat history like ChatGPT are all supported.
 
-Built with **Gradio**, **Whisper**, and a custom **agent graph**, PersonaPlex focuses on real-world usability and clean UX.
+PersonaPlex is built with Gradio, Whisper, and a custom agent graph with an emphasis on clean UX and real-world usability.
 
 ---
 
 ## Features
 
-- 📄 Chat with **PDF / TXT / CSV** documents
-- 🧠 **Multi-agent reasoning** using `agent_graph`
-- 💬 **Persistent chat history** (ChatGPT-style)
-- 🎙️ **Voice input** using Whisper (speech → text)
-- 📥 Export answers as **PDF, TXT, CSV**
-- ➕ Create & switch between multiple chats
-- 🔒 Secure API key handling using `.env`
+📄 Chat with documents in PDF, TXT, and CSV 🧠 Agent_graph for multi-agent reasoning
+💬 ChatGPT-style persistent chat history
+🎙️ Whisper voice input (speech → text)
+Answers can be exported as PDF, TXT, or CSV. Establish and navigate between several chats
+🔒 Safely managing API keys with.env
 
 ---
 
