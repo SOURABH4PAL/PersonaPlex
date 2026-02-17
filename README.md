@@ -9,7 +9,8 @@ PersonaPlex is built with Gradio, Whisper, and a custom agent graph with an emph
 
 ## Features
 
-📄 Chat with documents in PDF, TXT, and CSV 🧠 Agent_graph for multi-agent reasoning
+📄 Chat with documents in PDF, TXT, and CSV 
+🧠 Agent_graph for multi-agent reasoning
 💬 ChatGPT-style persistent chat history
 🎙️ Whisper voice input (speech → text)
 Answers can be exported as PDF, TXT, or CSV. Establish and navigate between several chats
