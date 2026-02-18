@@ -1,4 +1,7 @@
-.env
 __pycache__/
 *.pyc
+.env
+venv/
 chat_history/
+exports/
+uploads/
