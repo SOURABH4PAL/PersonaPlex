@@ -7,3 +7,5 @@ exports/
 uploads/
 *.mp3
 *.wav
+chroma_db/
+*.sqlite3
