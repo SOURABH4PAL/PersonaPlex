@@ -1,284 +1,473 @@
-import os
-import streamlit as st
-from dotenv import load_dotenv
-
-from utils.exporter import generate_pdf, generate_csv
-from personaplex_agents import agent_graph
-
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
-
-from pypdf import PdfReader
+import gradio as gr
 import pandas as pd
+from pypdf import PdfReader
+from personaplex_agents import agent_graph
+import soundfile as sf
+from faster_whisper import WhisperModel
 
-from auth import (
-    create_users_table,
-    create_chat_tables,
-    signup,
-    login,
-    create_chat,
-    get_chats,
-    save_message,
-    load_chat
+
+import tempfile
+import csv
+import json
+import uuid
+from datetime import datetime
+from pathlib import Path
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.pagesizes import A4
+
+whisper = WhisperModel(
+    "small",
+    device="cpu",
+    compute_type="int8"
 )
 
-# ==================================================
+
+# ===============================
 # CONFIG
-# ==================================================
-load_dotenv()
-st.set_page_config("PersonaPlex — Multi-Agent Document AI", layout="wide")
+# ===============================
+CHAT_DIR = Path("chat_history")
+CHAT_DIR.mkdir(exist_ok=True)
 
-# ==================================================
-# DATABASE INIT
-# ==================================================
-create_users_table()
-create_chat_tables()
+# ===============================
+# HELPERS
+# ===============================
 
-# ==================================================
-# SESSION STATE
-# ==================================================
-if "user_id" not in st.session_state:
-    st.session_state.user_id = None
+def audio_to_text(audio):
+    if audio is None:
+        return ""
 
-if "chat_id" not in st.session_state:
-    st.session_state.chat_id = None
+    sr, data = audio
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        sf.write(f.name, data, sr)
+        segments, _ = whisper.transcribe(f.name)
 
-# ==================================================
-# AUTH
-# ==================================================
-if st.session_state.user_id is None:
-    st.title("🔐 PersonaPlex Login")
+    return " ".join(seg.text for seg in segments).strip()
 
-    tab1, tab2 = st.tabs(["Login", "Signup"])
+def read_file(file):
+    if not file or not hasattr(file, "name"):
+        return ""
 
-    with tab1:
-        email = st.text_input("Email")
-        password = st.text_input("Password", type="password")
-        if st.button("Login"):
-            user = login(email, password)
-            if user:
-                st.session_state.user_id = user[0]
-                st.rerun()
-            else:
-                st.error("Invalid credentials")
-
-    with tab2:
-        new_email = st.text_input("New Email")
-        new_password = st.text_input("New Password", type="password")
-        if st.button("Create Account"):
-            if signup(new_email, new_password):
-                st.success("Account created. Please login.")
-            else:
-                st.error("User already exists")
-
-    st.stop()
-
-# ==================================================
-# USER DIRECTORIES
-# ==================================================
-USER_ID = str(st.session_state.user_id)
-UPLOAD_DIR = f"uploads/{USER_ID}"
-VECTOR_DIR = f"chroma_db/{USER_ID}"
-
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(VECTOR_DIR, exist_ok=True)
-
-# ==================================================
-# EMBEDDINGS
-# ==================================================
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
-
-vectorstore = None
-file_path = None
-raw_text = ""
-
-# ==================================================
-# SIDEBAR
-# ==================================================
-with st.sidebar:
-    st.header("📂 Upload PDF / TXT / CSV")
-    uploaded_file = st.file_uploader(
-        "Upload document",
-        type=["pdf", "txt", "csv"]
-    )
-
-    st.divider()
-    st.subheader("💬 Chat History")
-
-    if st.button("➕ New Chat"):
-        st.session_state.chat_id = None
-        st.session_state.messages = []
-        st.rerun()
-
-    for cid, title in get_chats(USER_ID):
-        if st.button(title, key=f"chat_{cid}"):
-            st.session_state.chat_id = cid
-            st.session_state.messages = load_chat(cid)
-            st.rerun()
-
-# ==================================================
-# MAIN
-# ==================================================
-st.title("🧠 PersonaPlex — Multi-Agent Document AI")
-
-# ==================================================
-# FILE INGESTION
-# ==================================================
-if uploaded_file:
-    file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-
-    ext = uploaded_file.name.split(".")[-1].lower()
-
+    ext = file.name.split(".")[-1].lower()
     if ext == "pdf":
-        reader = PdfReader(file_path)
-        raw_text = "\n".join(p.extract_text() or "" for p in reader.pages)
-    elif ext == "txt":
-        raw_text = uploaded_file.getvalue().decode("utf-8", errors="ignore")
-    elif ext == "csv":
-        raw_text = pd.read_csv(file_path).to_string()
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=150
-    )
-
-    docs = [Document(page_content=c) for c in splitter.split_text(raw_text)]
-
-    vectorstore = Chroma.from_documents(
-        documents=docs,
-        embedding=embeddings,
-        persist_directory=VECTOR_DIR
-    )
-    vectorstore.persist()
-
-    st.success("✅ Document indexed with permanent memory")
-
-# ==================================================
-# DISPLAY CHAT
-# ==================================================
-for role, msg in st.session_state.messages:
-    with st.chat_message(role):
-        st.markdown(msg)
-
-import streamlit.components.v1 as components
-
-# ==================================================
-# 🎤 INPUT CONTROLLER (FIXED)
-# ==================================================
-
-if "pending_question" not in st.session_state:
-    st.session_state.pending_question = None
-
-st.subheader("🎤 Voice Assistant")
-
-voice_text = st.text_input(
-    "Speak or type your question",
-    key="voice_input"
-)
-
-if st.button("🚀 Ask (Voice)", key="ask_voice"):
-    if voice_text.strip():
-        st.session_state.pending_question = voice_text.strip()
-
-chat_text = st.chat_input(
-    "Ask something from your document...",
-    key="chat_input"
-)
-
-if chat_text:
-    st.session_state.pending_question = chat_text
+        reader = PdfReader(file.name)
+        return "\n".join(p.extract_text() or "" for p in reader.pages)
+    if ext == "txt":
+        return open(file.name, "r", encoding="utf-8", errors="ignore").read()
+    if ext == "csv":
+        return pd.read_csv(file.name).to_string()
+    return ""
 
 
-st.subheader("🎙️ Voice Input (Real Mic)")
 
-mic_text = components.html(
-    """
-    <button onclick="startDictation()">🎤 Start Speaking</button>
-    <p id="output"></p>
-
-    <script>
-    function startDictation() {
-        const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-        recognition.lang = 'en-US';
-        recognition.start();
-
-        recognition.onresult = function(event) {
-            const text = event.results[0][0].transcript;
-            document.getElementById("output").innerText = text;
-            window.parent.postMessage({voice: text}, "*");
-        };
+# ===============================
+# CHAT STORAGE
+# ===============================
+def new_chat():
+    return {
+        "chat_id": str(uuid.uuid4()),
+        "title": "New Chat",
+        "messages": [],
+        "created_at": datetime.now().isoformat()
     }
 
-    window.addEventListener("message", (event) => {
-        if (event.data.voice) {
-            window.voiceInput = event.data.voice;
-        }
-    });
-    </script>
-    """,
-    height=200
-)
-if "voice_from_mic" not in st.session_state:
-    st.session_state.voice_from_mic = None
+def save_chat(chat):
+    with open(CHAT_DIR / f"{chat['chat_id']}.json", "w", encoding="utf-8") as f:
+        json.dump(chat, f, indent=2, ensure_ascii=False)
 
-st.write("🎧 Waiting for voice...")
+def load_chat(chat_id):
+    path = CHAT_DIR / f"{chat_id}.json"
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-st.session_state.voice_from_mic = st.experimental_get_query_params().get("voice")
+def list_chats():
+    chats = []
+    for file in CHAT_DIR.glob("*.json"):
+        with open(file, "r", encoding="utf-8") as f:
+            chat = json.load(f)
+            chats.append((chat.get("title", "New Chat"), chat["chat_id"]))
+    return chats
 
-# ==================================================
-# RUN AGENT
-# ==================================================
-question = st.session_state.pending_question
+# ===============================
+# CORE CHAT HANDLER
+# ===============================
+def chat_handler(message, chat, file):
+    if not message:
+        return chat["messages"], chat, None
 
-if question:
-    with st.chat_message("user"):
-        st.markdown(question)
+    file_content = read_file(file) if file else ""
 
-    if st.session_state.chat_id is None:
-        chat_id = create_chat(USER_ID, question[:60])
-        st.session_state.chat_id = chat_id
-    else:
-        chat_id = st.session_state.chat_id
-
-    save_message(chat_id, "user", question)
-    st.session_state.messages.append(("user", question))
-
-    result = agent_graph.invoke({
-        "task": question,
-        "file_name": uploaded_file.name if uploaded_file else "",
-        "file_path": file_path if uploaded_file else "",
-        "messages": [],
-        "file_content": raw_text[:12000] if uploaded_file else ""
+    chat["messages"].append({
+        "role": "user",
+        "content": message
     })
 
-    final_answer = result["messages"][-1].content
+    try:
+        file_name = ""
+        file_path = ""
 
-    with st.chat_message("assistant"):
-        st.markdown(final_answer)
+        if file:
+            from pathlib import Path
+            file_name = Path(file.name).name
+            file_path = file.name
 
-    # 🔊 Voice output
-    st.components.v1.html(
-        f"""
-        <script>
-        const msg = new SpeechSynthesisUtterance({final_answer!r});
-        msg.lang = "en-US";
-        window.speechSynthesis.speak(msg);
-        </script>
-        """,
-        height=0
+        result = agent_graph.invoke({
+            "task": message,
+            "messages": chat["messages"],
+            "file_name": file_name,
+            "file_path": file_path,
+            "file_content": file_content[:12000]
+        })
+
+        msgs = result.get("messages", [])
+        if msgs:
+            last = msgs[-1]
+            answer = last["content"] if isinstance(last, dict) else last.content
+        else:
+            answer = "⚠️ No response generated."
+
+    except Exception as e:
+        answer = f"❌ Agent error: {e}"
+
+    chat["messages"].append({
+        "role": "assistant",
+        "content": answer
+    })
+
+    save_chat(chat)
+
+    audio_path = text_to_speech(answer)
+
+    return chat["messages"], chat, audio_path
+
+
+# ===============================
+# CHAT SWITCHING
+# ===============================
+def load_selected_chat(chat_id):
+    chat = load_chat(chat_id)
+    if not chat:
+        chat = new_chat()
+    return chat["messages"], chat
+
+
+def start_new_chat():
+    chat = new_chat()
+    save_chat(chat)
+    return (
+        chat["messages"],
+        chat,
+        gr.update(choices=list_chats(), value=chat["chat_id"])
     )
 
-    save_message(chat_id, "assistant", final_answer)
-    st.session_state.messages.append(("assistant", final_answer))
+def delete_chat(chat):
+    if not chat or "chat_id" not in chat:
+        new = new_chat()
+        save_chat(new)
+        return [], new, gr.update(choices=list_chats(), value=new["chat_id"])
 
-    # reset so it doesn't rerun infinitely
-    st.session_state.pending_question = None
+    chat_file = CHAT_DIR / f"{chat['chat_id']}.json"
+
+    if chat_file.exists():
+        chat_file.unlink()  # delete file
+
+    new = new_chat()
+    save_chat(new)
+
+    return (
+        new["messages"],
+        new,
+        gr.update(choices=list_chats(), value=new["chat_id"])
+    )
+
+
+# ===============================
+# EXPORT
+# ===============================
+def get_last_answer(chat):
+    for m in reversed(chat["messages"]):
+        if m["role"] == "assistant":
+            return m["content"]
+    return ""
+
+def export_pdf(text):
+    file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+
+    doc = SimpleDocTemplate(
+        file.name,
+        pagesize=A4,
+        rightMargin=40,
+        leftMargin=40,
+        topMargin=40,
+        bottomMargin=40
+    )
+
+    styles = getSampleStyleSheet()
+    story = []
+
+    for para in text.split("\n\n"):
+        story.append(Paragraph(para.replace("\n", "<br/>"), styles["Normal"]))
+        story.append(Spacer(1, 12))
+
+    doc.build(story)
+    return file.name
+
+def export_txt(text):
+    f = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8")
+    f.write(text)
+    f.close()
+    return f.name
+
+def export_csv(text):
+    f = tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w", newline="", encoding="utf-8")
+    writer = csv.writer(f)
+    writer.writerow(["Answer"])
+    for line in text.split("\n"):
+        writer.writerow([line])
+    f.close()
+    return f.name
+
+def export_answer(chat, fmt):
+    ans = get_last_answer(chat)
+    if not ans:
+        return None
+    return {
+        "PDF": export_pdf,
+        "TXT": export_txt,
+        "CSV": export_csv
+    }[fmt](ans)
+
+import edge_tts
+import asyncio
+
+def text_to_speech(text):
+    if not text:
+        return None
+
+    out_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+    out_file.close()
+
+    async def _run():
+        communicate = edge_tts.Communicate(
+            text=text,
+            voice="en-IN-PrabhatNeural"  # Indian male voice
+        )
+        await communicate.save(out_file.name)
+
+    asyncio.run(_run())
+    return out_file.name
+
+# ===============================
+# UI
+# ===============================
+with gr.Blocks(
+    css="""
+    /* Global */
+    body {
+        background: #0f0f12;
+        font-family: Inter, system-ui, sans-serif;
+        color: #e5e7eb;
+    }
+
+    .gradio-container {
+        max-width: 100% !important;
+        padding: 0 !important;
+    }
+
+    /* Sidebar (Discord-style) */
+    .gr-radio {
+        background: #111318;
+        border-right: 1px solid #1f2937;
+        height: 100vh;
+        padding: 16px;
+        border-radius: 0;
+    }
+
+    .gr-radio label {
+        background: transparent !important;
+        border-radius: 10px;
+        padding: 8px 10px;
+        margin-bottom: 6px;
+        transition: background 0.2s;
+    }
+
+    .gr-radio label:hover {
+        background: #1f2937 !important;
+    }
+
+    /* Chat area */
+    .chatbot {
+        background: #0f0f12 !important;
+        border-radius: 0 !important;
+        padding: 16px;
+        height: calc(100vh - 160px);
+    }
+
+    /* Chat bubbles */
+    .chatbot .message.user {
+        background: #1f2937 !important;
+        border-radius: 12px;
+        padding: 10px 14px;
+    }
+
+    .chatbot .message.bot {
+        background: #111827 !important;
+        border-radius: 12px;
+        padding: 10px 14px;
+    }
+
+    /* Input bar (Notion-style) */
+    textarea {
+        background: #111827 !important;
+        border: 1px solid #1f2937 !important;
+        border-radius: 12px !important;
+        padding: 14px !important;
+        font-size: 15px;
+        color: #e5e7eb !important;
+    }
+
+    textarea:focus {
+        outline: none !important;
+        border-color: #6366f1 !important;
+    }
+
+    /* Buttons */
+    button {
+        border-radius: 12px !important;
+        font-weight: 600;
+        background: #1f2937 !important;
+        color: #e5e7eb !important;
+        border: none !important;
+    }
+
+    button:hover {
+        background: #374151 !important;
+    }
+
+    /* Delete button */
+    button[variant="stop"] {
+        background: #7f1d1d !important;
+    }
+
+    button[variant="stop"]:hover {
+        background: #991b1b !important;
+    }
+
+    /* Audio */
+    audio {
+        border-radius: 12px;
+        background: #111827;
+    }
+    """
+) as demo:
+
+
+    current_chat = gr.State(new_chat())
+
+    with gr.Row():
+
+    # ======================
+    # SIDEBAR (HISTORY)
+    # ======================
+        with gr.Column(scale=1, min_width=260):
+            gr.Markdown("## 🧠 PersonaPlex")
+            gr.Markdown("### 🕘 History")
+
+            chat_list = gr.Radio(
+                choices=list_chats(),
+                label="",
+                interactive=True
+            )
+
+            new_chat_btn = gr.Button("➕ New Chat")
+
+    # ======================
+    # MAIN CHAT AREA
+    # ======================
+        with gr.Column(scale=4):
+
+        # Top actions (export)
+            with gr.Row():
+                export_type = gr.Dropdown(
+                    ["PDF", "TXT", "CSV"],
+                    value="PDF",
+                    label="Export as"
+                )
+                export_btn = gr.Button("⬇️ Download")
+
+            file_output = gr.File(visible=False)
+
+        # File upload (subtle, Notion-style)
+            file_input = gr.File(
+                label="📎 Drop a file (PDF / TXT / CSV)"
+            )
+
+        # Chat
+            chatbot = gr.Chatbot(height=520)
+
+        # Input bar
+            text_input = gr.Textbox(
+                placeholder="Ask your document anything…",
+                show_label=False
+            )
+
+            with gr.Row():
+                audio_input = gr.Audio(
+                    sources=["microphone"],
+                    type="numpy",
+                    label="🎤"
+                )
+                send_btn = gr.Button("🚀 Send")
+                delete_btn = gr.Button("🗑️", variant="stop")
+
+        # Voice output
+            voice_output = gr.Audio(
+                label="🔊 Assistant",
+                autoplay=True
+            )
+
+
+
+    audio_input.change(audio_to_text, audio_input, text_input)
+
+    send_btn.click(
+        chat_handler,
+        [text_input, current_chat, file_input],
+        [chatbot, current_chat, voice_output]
+    ).then(
+        lambda: "",
+        None,
+        text_input
+    )
+
+    delete_btn.click(
+        fn=delete_chat,
+        inputs=[current_chat],
+        outputs=[chatbot, current_chat, chat_list]
+    )
+
+
+
+    text_input.submit(
+        chat_handler,
+        [text_input, current_chat, file_input],
+        [chatbot, current_chat, voice_output]
+    ).then(
+        lambda: "",
+        None,
+        text_input
+    )
+
+
+
+    chat_list.change(load_selected_chat, chat_list, [chatbot, current_chat])
+    new_chat_btn.click(start_new_chat, None, [chatbot, current_chat, chat_list])
+
+    export_btn.click(export_answer, [current_chat, export_type], file_output)
+
+demo.launch()
