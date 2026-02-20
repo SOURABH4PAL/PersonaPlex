@@ -265,41 +265,172 @@ def text_to_speech(text):
 # ===============================
 # UI
 # ===============================
-with gr.Blocks() as demo:
-    gr.Markdown("## 🧠 PersonaPlex — Document Chatbot")
+with gr.Blocks(
+    css="""
+    /* Global */
+    body {
+        background: #0f0f12;
+        font-family: Inter, system-ui, sans-serif;
+        color: #e5e7eb;
+    }
+
+    .gradio-container {
+        max-width: 100% !important;
+        padding: 0 !important;
+    }
+
+    /* Sidebar (Discord-style) */
+    .gr-radio {
+        background: #111318;
+        border-right: 1px solid #1f2937;
+        height: 100vh;
+        padding: 16px;
+        border-radius: 0;
+    }
+
+    .gr-radio label {
+        background: transparent !important;
+        border-radius: 10px;
+        padding: 8px 10px;
+        margin-bottom: 6px;
+        transition: background 0.2s;
+    }
+
+    .gr-radio label:hover {
+        background: #1f2937 !important;
+    }
+
+    /* Chat area */
+    .chatbot {
+        background: #0f0f12 !important;
+        border-radius: 0 !important;
+        padding: 16px;
+        height: calc(100vh - 160px);
+    }
+
+    /* Chat bubbles */
+    .chatbot .message.user {
+        background: #1f2937 !important;
+        border-radius: 12px;
+        padding: 10px 14px;
+    }
+
+    .chatbot .message.bot {
+        background: #111827 !important;
+        border-radius: 12px;
+        padding: 10px 14px;
+    }
+
+    /* Input bar (Notion-style) */
+    textarea {
+        background: #111827 !important;
+        border: 1px solid #1f2937 !important;
+        border-radius: 12px !important;
+        padding: 14px !important;
+        font-size: 15px;
+        color: #e5e7eb !important;
+    }
+
+    textarea:focus {
+        outline: none !important;
+        border-color: #6366f1 !important;
+    }
+
+    /* Buttons */
+    button {
+        border-radius: 12px !important;
+        font-weight: 600;
+        background: #1f2937 !important;
+        color: #e5e7eb !important;
+        border: none !important;
+    }
+
+    button:hover {
+        background: #374151 !important;
+    }
+
+    /* Delete button */
+    button[variant="stop"] {
+        background: #7f1d1d !important;
+    }
+
+    button[variant="stop"]:hover {
+        background: #991b1b !important;
+    }
+
+    /* Audio */
+    audio {
+        border-radius: 12px;
+        background: #111827;
+    }
+    """
+) as demo:
+
 
     current_chat = gr.State(new_chat())
 
     with gr.Row():
-        export_type = gr.Dropdown(["PDF", "TXT", "CSV"], value="PDF")
-        export_btn = gr.Button("⬇️ Download")
-    file_output = gr.File()
 
-    with gr.Row():
-        with gr.Column(scale=1):
-            file_input = gr.File(label="Upload PDF / TXT / CSV")
-            audio_input = gr.Audio(
-                sources=["microphone"],
-                type="numpy",
-                label="🎤 Speak"
+    # ======================
+    # SIDEBAR (HISTORY)
+    # ======================
+        with gr.Column(scale=1, min_width=260):
+            gr.Markdown("## 🧠 PersonaPlex")
+            gr.Markdown("### 🕘 History")
+
+            chat_list = gr.Radio(
+                choices=list_chats(),
+                label="",
+                interactive=True
             )
 
+            new_chat_btn = gr.Button("➕ New Chat")
 
-        with gr.Column(scale=3):
-            chatbot = gr.Chatbot(height=450)
-            text_input = gr.Textbox(placeholder="Ask something…")
-            send_btn = gr.Button("➤")
-            delete_btn = gr.Button("🗑️ Delete Chat", variant="stop")
+    # ======================
+    # MAIN CHAT AREA
+    # ======================
+        with gr.Column(scale=4):
 
+        # Top actions (export)
+            with gr.Row():
+                export_type = gr.Dropdown(
+                    ["PDF", "TXT", "CSV"],
+                    value="PDF",
+                    label="Export as"
+                )
+                export_btn = gr.Button("⬇️ Download")
 
-        with gr.Column(scale=1):
-            chat_list = gr.Radio(choices=list_chats(), label="Previous chats")
-            new_chat_btn = gr.Button("➕ New chat")
+            file_output = gr.File(visible=False)
 
-    voice_output = gr.Audio(
-        label="🔊 Assistant Voice",
-        autoplay=True
-    )
+        # File upload (subtle, Notion-style)
+            file_input = gr.File(
+                label="📎 Drop a file (PDF / TXT / CSV)"
+            )
+
+        # Chat
+            chatbot = gr.Chatbot(height=520)
+
+        # Input bar
+            text_input = gr.Textbox(
+                placeholder="Ask your document anything…",
+                show_label=False
+            )
+
+            with gr.Row():
+                audio_input = gr.Audio(
+                    sources=["microphone"],
+                    type="numpy",
+                    label="🎤"
+                )
+                send_btn = gr.Button("🚀 Send")
+                delete_btn = gr.Button("🗑️", variant="stop")
+
+        # Voice output
+            voice_output = gr.Audio(
+                label="🔊 Assistant",
+                autoplay=True
+            )
+
 
 
     audio_input.change(audio_to_text, audio_input, text_input)

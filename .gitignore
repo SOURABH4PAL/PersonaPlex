@@ -5,3 +5,5 @@ venv/
 chat_history/
 exports/
 uploads/
+*.mp3
+*.wav
