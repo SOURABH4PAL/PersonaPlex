@@ -1,12 +1,23 @@
+# Python
 __pycache__/
 *.pyc
 .env
 venv/
+
+# Runtime data
 chat_history/
 exports/
 uploads/
+
+# Audio
 *.mp3
 *.wav
+
+# Vector DB / embeddings
 chroma_db/
+chroma/
 *.sqlite3
 *.bin
+
+# Documents (VERY IMPORTANT)
+*.pdf
