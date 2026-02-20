@@ -98,22 +98,21 @@ def list_chats():
 # ===============================
 def chat_handler(message, chat, file):
     if not message:
-        return chat["messages"], chat
+        return chat["messages"], chat, None
 
-    file_content = read_file(file)
+    file_content = read_file(file) if file else ""
 
     chat["messages"].append({
         "role": "user",
         "content": message
     })
 
-    from pathlib import Path
-
     try:
         file_name = ""
         file_path = ""
 
         if file:
+            from pathlib import Path
             file_name = Path(file.name).name
             file_path = file.name
 
@@ -125,13 +124,12 @@ def chat_handler(message, chat, file):
             "file_content": file_content[:12000]
         })
 
-
         msgs = result.get("messages", [])
         if msgs:
             last = msgs[-1]
             answer = last["content"] if isinstance(last, dict) else last.content
         else:
-            answer = "⚠️ No response."
+            answer = "⚠️ No response generated."
 
     except Exception as e:
         answer = f"❌ Agent error: {e}"
@@ -141,11 +139,12 @@ def chat_handler(message, chat, file):
         "content": answer
     })
 
-    if chat["title"] == "New Chat":
-        chat["title"] = message[:40]
-
     save_chat(chat)
-    return chat["messages"], chat
+
+    audio_path = text_to_speech(answer)
+
+    return chat["messages"], chat, audio_path
+
 
 # ===============================
 # CHAT SWITCHING
@@ -164,6 +163,26 @@ def start_new_chat():
         chat["messages"],
         chat,
         gr.update(choices=list_chats(), value=chat["chat_id"])
+    )
+
+def delete_chat(chat):
+    if not chat or "chat_id" not in chat:
+        new = new_chat()
+        save_chat(new)
+        return [], new, gr.update(choices=list_chats(), value=new["chat_id"])
+
+    chat_file = CHAT_DIR / f"{chat['chat_id']}.json"
+
+    if chat_file.exists():
+        chat_file.unlink()  # delete file
+
+    new = new_chat()
+    save_chat(new)
+
+    return (
+        new["messages"],
+        new,
+        gr.update(choices=list_chats(), value=new["chat_id"])
     )
 
 
@@ -223,6 +242,26 @@ def export_answer(chat, fmt):
         "CSV": export_csv
     }[fmt](ans)
 
+import edge_tts
+import asyncio
+
+def text_to_speech(text):
+    if not text:
+        return None
+
+    out_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+    out_file.close()
+
+    async def _run():
+        communicate = edge_tts.Communicate(
+            text=text,
+            voice="en-IN-PrabhatNeural"  # Indian male voice
+        )
+        await communicate.save(out_file.name)
+
+    asyncio.run(_run())
+    return out_file.name
+
 # ===============================
 # UI
 # ===============================
@@ -250,17 +289,50 @@ with gr.Blocks() as demo:
             chatbot = gr.Chatbot(height=450)
             text_input = gr.Textbox(placeholder="Ask something…")
             send_btn = gr.Button("➤")
+            delete_btn = gr.Button("🗑️ Delete Chat", variant="stop")
+
 
         with gr.Column(scale=1):
             chat_list = gr.Radio(choices=list_chats(), label="Previous chats")
             new_chat_btn = gr.Button("➕ New chat")
 
-   
+    voice_output = gr.Audio(
+        label="🔊 Assistant Voice",
+        autoplay=True
+    )
+
 
     audio_input.change(audio_to_text, audio_input, text_input)
 
-    send_btn.click(chat_handler, [text_input, current_chat, file_input], [chatbot, current_chat])
-    text_input.submit(chat_handler, [text_input, current_chat, file_input], [chatbot, current_chat])
+    send_btn.click(
+        chat_handler,
+        [text_input, current_chat, file_input],
+        [chatbot, current_chat, voice_output]
+    ).then(
+        lambda: "",
+        None,
+        text_input
+    )
+
+    delete_btn.click(
+        fn=delete_chat,
+        inputs=[current_chat],
+        outputs=[chatbot, current_chat, chat_list]
+    )
+
+
+
+    text_input.submit(
+        chat_handler,
+        [text_input, current_chat, file_input],
+        [chatbot, current_chat, voice_output]
+    ).then(
+        lambda: "",
+        None,
+        text_input
+    )
+
+
 
     chat_list.change(load_selected_chat, chat_list, [chatbot, current_chat])
     new_chat_btn.click(start_new_chat, None, [chatbot, current_chat, chat_list])
