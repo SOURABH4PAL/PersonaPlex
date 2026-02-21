@@ -242,11 +242,14 @@ def export_answer(chat, fmt):
         "CSV": export_csv
     }[fmt](ans)
 
-import edge_tts
+try:
+    import edge_tts
+except ModuleNotFoundError:
+    edge_tts = None
 import asyncio
 
 def text_to_speech(text):
-    if not text:
+    if not text or edge_tts is None:
         return None
 
     out_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
@@ -255,11 +258,15 @@ def text_to_speech(text):
     async def _run():
         communicate = edge_tts.Communicate(
             text=text,
-            voice="en-IN-PrabhatNeural"  # Indian male voice
+            voice="en-IN-PrabhatNeural"
         )
         await communicate.save(out_file.name)
 
-    asyncio.run(_run())
+    try:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(_run())
+    except RuntimeError:
+        asyncio.run(_run())
     return out_file.name
 
 # ===============================
